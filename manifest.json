@@ -1,8 +1,8 @@
 {
   "manifest_version": 3,
   "name": "LinkedIn Outreach AI",
-  "version": "3.1.0",
-  "description": "LinkedIn outreach message generator. No license key required.",
+  "version": "3.2.0",
+  "description": "Personalised LinkedIn outreach: finds common ground with your résumé and fits LinkedIn's length limits.",
   "permissions": [
     "activeTab",
     "storage",

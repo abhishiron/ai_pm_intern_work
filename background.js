@@ -1,8 +1,8 @@
 'use strict';
 
-// background.js — Standalone version (assessment build)
-// No company server, no license key. Messages are generated locally for free.
-// Optional: a user can paste THEIR OWN Anthropic API key in Settings to get AI-written messages.
+// background.js — message routing, hook finding and message writing.
+// Free Mode: rule-based hooks + templates, nothing leaves the browser.
+// AI Mode: the user's OWN Anthropic API key (Settings) for hooks, messages and résumé reading.
 
 const ANTHROPIC_URL   = 'https://api.anthropic.com/v1/messages';
 const ANTHROPIC_MODEL = 'claude-haiku-5-5';
@@ -39,24 +39,8 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
     handleParseResume(sendResponse);
     return true;
   }
-
-  if (message.type === 'SAVE_RECENT') {
-    chrome.storage.local.get(['recentContacts'], (result) => {
-      const recent  = result.recentContacts || [];
-      const updated = [message.payload, ...recent.filter(c => c.profileUrl !== message.payload.profileUrl)].slice(0, 5);
-      chrome.storage.local.set({ recentContacts: updated });
-      sendResponse({ status: 'saved' });
-    });
-    return true;
-  }
-
-  if (message.type === 'GET_RECENT') {
-    chrome.storage.local.get(['recentContacts'], (result) => {
-      sendResponse({ contacts: result.recentContacts || [] });
-    });
-    return true;
-  }
 });
+// (Removed SAVE_RECENT / GET_RECENT: never called — the popup uses utils/cache.js.)
 
 // ─── Scrape profile from active tab ───────────────────────────────────────────
 async function handleScrapeProfile(sendResponse) {

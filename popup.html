@@ -35,10 +35,6 @@
         Navigate to a LinkedIn profile page to generate a message.
       </div>
 
-      <div class="alert alert-warning hidden" id="no-key-warning">
-        <svg width="14" height="14" viewBox="0 0 24 24" fill="none"><circle cx="12" cy="12" r="10" stroke="currentColor" stroke-width="2"/><path d="M12 8v4M12 16h.01" stroke="currentColor" stroke-width="2" stroke-linecap="round"/></svg>
-        
-      </div>
 
       <div class="profile-card hidden" id="profile-section">
         <div class="profile-avatar" id="profile-avatar">?</div>
@@ -196,7 +192,7 @@
         <!-- Optional: user's own API key -->
         <div class="license-key-section">
           <div class="license-key-label">Your Anthropic API Key (optional)</div>
-          <div class="license-key-desc">Leave empty to use Free Mode (no key needed). Add your own key for AI-written messages.</div>
+          <div class="license-key-desc">Leave empty to use Free Mode (templates, no key needed). Add your own key for Claude-written messages, smarter hooks and résumé reading.</div>
           <div class="license-key-input-wrap">
             <input id="api-key" type="password" class="license-key-input"
               placeholder="sk-ant-…" autocomplete="off" spellcheck="false" />
@@ -230,7 +226,8 @@
         <div class="status-bar hidden" id="settings-status"></div>
 
         <div class="settings-note">
-          Everything is stored locally on your device. No data is sent to any company server.
+          Your key, résumé and recent contacts are stored only in this browser. In Free Mode nothing leaves your device.
+          In AI Mode, the profile you're viewing (and your résumé, once, when saved) is sent to Anthropic's API using your own key.
         </div>
 
       </div>
