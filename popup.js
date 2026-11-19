@@ -29,6 +29,7 @@ async function checkLicenseStatus() {
   el.textContent = key ? '● AI Mode' : '● Free Mode';
   el.className   = 'key-status active';
   document.getElementById('no-key-warning').classList.add('hidden');
+  await updatePipelineCopy();
 }
 
 // ─── Tabs ─────────────────────────────────────────────────────────────────────
@@ -196,29 +197,31 @@ async function handleEnrich() {
   clearCurrentStatus();
 
   isEnriching = true;
-  setButtonLoading('enrich-btn', 'enrich-label', 'enrich-spinner', true, 'Scraping profile…');
-  setLayerStatus(1, 'running', 'Scraping…');
+  setButtonLoading('enrich-btn', 'enrich-label', 'enrich-spinner', true, 'Reading profile…');
+  setLayerStatus(1, 'running', 'Reading…');
 
   let rawProfileData;
   try {
     rawProfileData = await sendToBackground({ action: 'scrapeProfile' });
   } catch (err) {
     setLayerStatus(1, 'error', 'Failed');
-    showCurrentStatus('Could not scrape. Are you on a LinkedIn profile page?', 'error');
+    showCurrentStatus('Could not read the profile. Are you on a LinkedIn profile page?', 'error');
     isEnriching = false;
-    setButtonLoading('enrich-btn', 'enrich-label', 'enrich-spinner', false, 'Scrape + Enrich (L1 + L2)');
+    setButtonLoading('enrich-btn', 'enrich-label', 'enrich-spinner', false, 'Read profile &amp; find hooks');
     return;
   }
 
   currentProfile = rawProfileData;
   renderProfileCard(rawProfileData);
-  setLayerStatus(1, 'running', 'Parsing…');
-  setButtonLoading('enrich-btn', 'enrich-label', 'enrich-spinner', true, 'Running AI layers…');
-  showCurrentStatus('Enriching…');
+  setLayerStatus(1, 'done', 'Done');
+  setLayerStatus(2, 'running', 'Finding…');
+  setButtonLoading('enrich-btn', 'enrich-label', 'enrich-spinner', true, 'Finding hooks…');
+  showCurrentStatus('Finding hooks…');
 
-  chrome.runtime.sendMessage({ type: 'RUN_ENRICH', payload: { rawProfileData } }, (response) => {
+  const messageType = document.getElementById('message-type').value;
+  chrome.runtime.sendMessage({ type: 'RUN_ENRICH', payload: { rawProfileData, messageType } }, (response) => {
     isEnriching = false;
-    setButtonLoading('enrich-btn', 'enrich-label', 'enrich-spinner', false, 'Scrape + Enrich (L1 + L2)');
+    setButtonLoading('enrich-btn', 'enrich-label', 'enrich-spinner', false, 'Read profile &amp; find hooks');
 
     if (chrome.runtime.lastError || !response) {
       setLayerStatus(1, 'error', 'Error');
@@ -240,9 +243,10 @@ async function handleEnrich() {
     deepEnrichmentJSON = response.enrichmentJSON;
     renderProfileCard({ name: deepProfileJSON.name, headline: deepProfileJSON.headline, currentCompany: deepProfileJSON.currentCompany });
     renderHooks(deepEnrichmentJSON);
+    setLayerStatus(2, 'done', deepEnrichmentJSON.source === 'claude' ? 'Claude' : 'Rules');
     setLayerStatus(3, '', 'Ready');
     document.getElementById('deep-generate-btn').disabled = false;
-    showCurrentStatus('Enrichment done. Hit Generate Message.', 'success');
+    showCurrentStatus('Hooks ready. Untick any you don\'t want, then hit Write message.', 'success');
   });
 }
 
@@ -252,17 +256,18 @@ async function handleDeepGenerate() {
   isGenerating = true;
   setButtonLoading('deep-generate-btn', 'deep-gen-label', 'deep-gen-spinner', true, 'Writing message…');
   setLayerStatus(3, 'running', 'Writing…');
-  showCurrentStatus('Layer 3: writing message…');
+  showCurrentStatus('Writing message…');
   hideMessage();
 
-  const messageType = document.getElementById('message-type').value;
-  const tone        = document.getElementById('tone').value;
+  const messageType   = document.getElementById('message-type').value;
+  const tone          = document.getElementById('tone').value;
+  const selectedHooks = [...document.querySelectorAll('#hooks-list .hook-item.selected')].map(el => el.dataset.hook);
 
   chrome.runtime.sendMessage(
-    { type: 'RUN_GENERATE', payload: { profileJSON: deepProfileJSON, enrichmentJSON: deepEnrichmentJSON, messageType, tone } },
+    { type: 'RUN_GENERATE', payload: { profileJSON: deepProfileJSON, enrichmentJSON: deepEnrichmentJSON, selectedHooks, messageType, tone } },
     async (response) => {
       isGenerating = false;
-      setButtonLoading('deep-generate-btn', 'deep-gen-label', 'deep-gen-spinner', false, 'Generate Message (L3)');
+      setButtonLoading('deep-generate-btn', 'deep-gen-label', 'deep-gen-spinner', false, 'Write message');
 
       if (chrome.runtime.lastError || !response) {
         setLayerStatus(3, 'error', 'Error');
@@ -378,12 +383,31 @@ function renderHooks(enrichmentJSON) {
     : (enrichmentJSON.companyNews || []).map(n => n.relevance || n.headline).filter(Boolean);
   if (!hooks.length) return;
   hooks.slice(0, 3).forEach(hook => {
-    const d = document.createElement('div');
-    d.className   = 'hook-item';
-    d.textContent = hook;
+    const d = document.createElement('button');
+    d.type         = 'button';
+    d.className    = 'hook-item selected';
+    d.dataset.hook = hook;
+    d.textContent  = hook;
+    d.setAttribute('aria-pressed', 'true');
+    d.addEventListener('click', () => {
+      const on = d.classList.toggle('selected');
+      d.setAttribute('aria-pressed', String(on));
+    });
     list.appendChild(d);
   });
   panel.classList.remove('hidden');
+}
+
+// Pipeline descriptions say what will actually happen with / without a key
+async function updatePipelineCopy() {
+  const s     = await loadStoredSettings();
+  const hasKey = !!(s.userApiKey || '').trim();
+  document.getElementById('l2-desc').textContent = hasKey
+    ? 'Claude picks the 3 most specific talking points from their profile.'
+    : 'Rule-based: recent post, current role, skills. Add a key for Claude.';
+  document.getElementById('l3-desc').textContent = hasKey
+    ? 'Claude writes the message around the hooks you keep.'
+    : 'Fills a template using the first hook you keep.';
 }
 
 // ─── UI helpers ───────────────────────────────────────────────────────────────

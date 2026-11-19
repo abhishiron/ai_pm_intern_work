@@ -75,7 +75,7 @@
 
       <div class="mode-toggle">
         <button class="mode-btn active" id="mode-simple">⚡ Quick Mode</button>
-        <button class="mode-btn" id="mode-deep">🔍 Deep Mode (3-Layer AI)</button>
+        <button class="mode-btn" id="mode-deep">🔍 Deep Mode</button>
       </div>
 
       <!-- Simple Mode -->
@@ -89,12 +89,12 @@
       <!-- Deep Mode -->
       <div id="deep-mode-ui" class="hidden">
         <div class="pipeline-panel">
-          <div class="pipeline-header">3-Layer AI Pipeline</div>
+          <div class="pipeline-header">How Deep Mode works</div>
           <div class="layer-row">
-            <div class="layer-badge l1">L1</div>
+            <div class="layer-badge l1">1</div>
             <div class="layer-info">
-              <div class="layer-title">OpenAI — Profile Parser</div>
-              <div class="layer-desc">Structures raw LinkedIn DOM into JSON</div>
+              <div class="layer-title">Read profile</div>
+              <div class="layer-desc">Reads the LinkedIn page you're on. Nothing leaves your browser.</div>
             </div>
             <div class="layer-status-wrap">
               <div class="status-dot" id="l1-dot"></div>
@@ -102,10 +102,10 @@
             </div>
           </div>
           <div class="layer-row">
-            <div class="layer-badge l2">L2</div>
+            <div class="layer-badge l2">2</div>
             <div class="layer-info">
-              <div class="layer-title">OpenAI — Web Enrichment</div>
-              <div class="layer-desc">Searches company news &amp; public work</div>
+              <div class="layer-title">Find hooks</div>
+              <div class="layer-desc" id="l2-desc">Picks the 3 best talking points from their profile.</div>
             </div>
             <div class="layer-status-wrap">
               <div class="status-dot" id="l2-dot"></div>
@@ -113,10 +113,10 @@
             </div>
           </div>
           <div class="layer-row">
-            <div class="layer-badge l3">L3</div>
+            <div class="layer-badge l3">3</div>
             <div class="layer-info">
-              <div class="layer-title">Message Writer</div>
-              <div class="layer-desc">Synthesizes everything into personalized message</div>
+              <div class="layer-title">Write message</div>
+              <div class="layer-desc" id="l3-desc">Writes the message around the hooks you keep.</div>
             </div>
             <div class="layer-status-wrap">
               <div class="status-dot" id="l3-dot"></div>
@@ -126,16 +126,16 @@
         </div>
 
         <div class="hooks-panel hidden" id="hooks-panel">
-          <div class="hooks-label">⚡ Top hooks found</div>
+          <div class="hooks-label">⚡ Hooks found <span class="hooks-hint">— click to include / exclude</span></div>
           <div id="hooks-list"></div>
         </div>
 
         <button id="enrich-btn" class="btn btn-primary btn-full">
-          <span id="enrich-label">Scrape + Enrich (L1 + L2)</span>
+          <span id="enrich-label">Read profile &amp; find hooks</span>
           <span id="enrich-spinner" class="spinner hidden"></span>
         </button>
         <button id="deep-generate-btn" class="btn btn-secondary btn-full" disabled>
-          <span id="deep-gen-label">Generate Message (L3)</span>
+          <span id="deep-gen-label">Write message</span>
           <span id="deep-gen-spinner" class="spinner hidden"></span>
         </button>
       </div>

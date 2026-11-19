@@ -107,23 +107,51 @@ async function handleQuickGenerate(data, sendResponse) {
   }
 }
 
-// ─── Deep Mode enrich (L1 + L2) — runs locally ────────────────────────────────
-async function handleEnrich({ rawProfileData }, sendResponse) {
+// ─── Deep Mode step 2: find hooks ─────────────────────────────────────────────
+// With a key, Claude picks the strongest talking points. Without one, the same
+// rule-based hooks as Quick Mode are used — and the UI says so honestly.
+async function handleEnrich({ rawProfileData, messageType }, sendResponse) {
   try {
-    const profileJSON    = normalizeProfile(rawProfileData);
-    const enrichmentJSON = { topHooks: buildHooks(profileJSON), companyNews: [] };
-    await delay(300);
-    sendResponse({ status: 'enrich_complete', profileJSON, enrichmentJSON });
+    const profileJSON = normalizeProfile(rawProfileData);
+    const apiKey      = await getApiKey();
+    let topHooks      = buildHooks(profileJSON);
+    let source        = 'rules';
+
+    if (apiKey) {
+      try {
+        const aiHooks = await findHooksWithClaude(apiKey, profileJSON, messageType);
+        if (aiHooks.length) { topHooks = aiHooks; source = 'claude'; }
+      } catch (_) { /* fall back to rule-based hooks */ }
+    }
+
+    sendResponse({ status: 'enrich_complete', profileJSON, enrichmentJSON: { topHooks, source } });
   } catch (err) {
     sendResponse({ status: 'error', error: err.message });
   }
 }
 
-// ─── Deep Mode generate (L3) ──────────────────────────────────────────────────
-async function handleDeepGenerate({ profileJSON, enrichmentJSON, messageType, tone }, sendResponse) {
+async function findHooksWithClaude(apiKey, p, messageType) {
+  const prompt =
+`You help someone write a LinkedIn outreach message (purpose: ${messageType || 'Networking'}).
+From this profile, pick the 3 most specific, personal talking points they could open with.
+Prefer concrete things (a recent post, a project, a career move) over generic ones (job title, "skilled in X").
+Profile: ${JSON.stringify({
+    name: p.name, headline: p.headline, title: p.currentTitle, company: p.currentCompany, location: p.location,
+    about: truncate(p.about, 600), recentPosts: p.recentPosts, experience: p.experienceEntries,
+    education: p.educationEntries, skills: p.skills
+  })}
+Reply with ONLY a JSON array of 3 short strings (max 90 characters each), no other text.`;
+  const raw   = await callClaude(apiKey, prompt, 300);
+  const match = raw.match(/\[[\s\S]*\]/);
+  const list  = match ? JSON.parse(match[0]) : [];
+  return list.filter(h => typeof h === 'string' && h.trim()).map(h => truncate(h, 120)).slice(0, 3);
+}
+
+// ─── Deep Mode step 3: write message from the hooks the user kept ─────────────
+async function handleDeepGenerate({ profileJSON, enrichmentJSON, selectedHooks, messageType, tone }, sendResponse) {
   try {
     const settings = await new Promise(resolve => chrome.storage.local.get(['userName', 'userBio'], resolve));
-    const hooks    = enrichmentJSON?.topHooks || [];
+    const hooks    = Array.isArray(selectedHooks) ? selectedHooks : (enrichmentJSON?.topHooks || []);
     const apiKey   = await getApiKey();
 
     const message = apiKey
@@ -178,7 +206,8 @@ function localMessage(p, hooks, messageType, tone, settings = {}) {
   const close = { Formal: 'Kind regards,', Neutral: 'Best,', Casual: 'Cheers,' }[tone] || 'Best,';
 
   let hookLine = `I came across your profile and was impressed by your work as ${role}${co}.`;
-  if (p.recentPosts.length) hookLine = `I enjoyed your recent post about "${truncate(p.recentPosts[0], 60)}".`;
+  if (hooks.length) hookLine = hookToSentence(hooks[0]);
+  else if (p.recentPosts.length) hookLine = `I enjoyed your recent post about "${truncate(p.recentPosts[0], 60)}".`;
   else if (p.skills.length) hookLine = `Your experience in ${p.skills.slice(0, 2).join(' and ')}${co} caught my attention.`;
 
   const intro = bio ? ` A bit about me: ${truncate(bio, 120)}` : '';
@@ -193,6 +222,19 @@ function localMessage(p, hooks, messageType, tone, settings = {}) {
   return `${greet}\n\n${hookLine}${intro}\n\n${ask}\n\n${close}${me ? '\n' + me : ''}`;
 }
 
+// Turns a hook ("Recent post: …", "Studied at …") into an opening sentence.
+function hookToSentence(h) {
+  let m;
+  if ((m = h.match(/^Recent post: "(.*)"$/)))      return `I enjoyed your recent post — "${truncate(m[1], 70)}".`;
+  if ((m = h.match(/^Works as (.+) at (.+)$/)))    return `I came across your work as ${m[1]} at ${m[2]} and was impressed.`;
+  if ((m = h.match(/^Currently at (.+)$/)))        return `I noticed you're currently at ${m[1]}.`;
+  if ((m = h.match(/^Skilled in (.+)$/)))          return `Your experience in ${m[1]} caught my attention.`;
+  if ((m = h.match(/^Previously at (.+)$/)))       return `I saw your journey through ${m[1]} — really interesting path.`;
+  if ((m = h.match(/^Studied at (.+)$/)))          return `I noticed you studied at ${m[1]}.`;
+  if ((m = h.match(/^Headline: (.+)$/)))           return `Your profile — "${truncate(m[1], 70)}" — caught my attention.`;
+  return `Something on your profile stood out to me: ${h.replace(/\.$/, '')}.`;
+}
+
 // ─── AI message writer (uses the user's OWN key) ──────────────────────────────
 async function aiMessage(apiKey, p, hooks, messageType, tone, settings = {}) {
   const prompt =
@@ -202,7 +244,7 @@ Recipient profile: ${JSON.stringify({
     name: p.name, headline: p.headline, title: p.currentTitle, company: p.currentCompany,
     about: truncate(p.about, 400), recentPosts: p.recentPosts, skills: p.skills
   })}
-Personalisation hooks: ${hooks.join(' | ')}
+Open with these personalisation hooks (in this order of priority): ${hooks.join(' | ') || '(none — use the most specific detail in the profile)'}
 Sender name: ${settings.userName || '(not given)'}. Sender bio: ${settings.userBio || '(not given)'}.
 Return only the message text, nothing else.`;
   return (await callClaude(apiKey, prompt, 400)).trim();
