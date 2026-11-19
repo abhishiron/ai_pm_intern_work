@@ -182,8 +182,8 @@ async function hooksFor(p) {
 // ─── Quick Mode generate ──────────────────────────────────────────────────────
 async function handleQuickGenerate(data, sendResponse) {
   try {
-    const { profileData, messageType, tone } = data;
-    const settings = { ...(data.settings || {}), ...(await storageGet(['resumeProfile'])) };
+    const { profileData, messageType, tone, format } = data;
+    const settings = { ...(data.settings || {}), ...(await storageGet(['resumeProfile'])), format };
     const p     = normalizeProfile(profileData);
     const hooks = await hooksFor(p);
     const apiKey = await getApiKey();
@@ -243,9 +243,9 @@ Reply with ONLY a JSON array of 3 short strings (max 90 characters each), no oth
 }
 
 // ─── Deep Mode step 3: write message from the hooks the user kept ─────────────
-async function handleDeepGenerate({ profileJSON, enrichmentJSON, selectedHooks, messageType, tone }, sendResponse) {
+async function handleDeepGenerate({ profileJSON, enrichmentJSON, selectedHooks, messageType, tone, format }, sendResponse) {
   try {
-    const settings = await storageGet(['userName', 'userBio', 'resumeProfile']);
+    const settings = { ...(await storageGet(['userName', 'userBio', 'resumeProfile'])), format };
     const hooks    = Array.isArray(selectedHooks) ? selectedHooks : (enrichmentJSON?.topHooks || []);
     const apiKey   = await getApiKey();
 
@@ -321,7 +321,33 @@ function localMessage(p, hooks, messageType, tone, settings = {}) {
     Collaboration: `I think there could be a great opportunity for us to collaborate and would love to explore it.`
   }[messageType] || `I'd love to connect.`;
 
+  if (settings.format === 'note') return fitNote(greet, hookLine, intro, NOTE_ASKS[messageType] || NOTE_ASKS.Networking, me);
+
   return `${greet}\n\n${hookLine}${intro}\n\n${ask}\n\n${close}${me ? '\n' + me : ''}`;
+}
+
+// ─── Connection notes: LinkedIn cuts them off at 300 characters ───────────────
+const NOTE_LIMIT = 300;
+const NOTE_ASKS = {
+  Networking:    `Would love to connect!`,
+  Job:           `Would love to connect and hear about openings on your team.`,
+  Referral:      `Would you be open to a quick chat about roles there?`,
+  Collaboration: `Would love to connect and explore working together.`
+};
+
+// Builds the note from the most important parts down, dropping or trimming the
+// least important part until it fits: intro → hook detail → sign-off.
+function fitNote(greet, hookLine, intro, ask, me) {
+  const build = (h, i, sign) => `${greet} ${h}${i} ${ask}${sign}`.replace(/\s+/g, ' ').trim();
+  const sign  = me ? ` – ${me.split(' ')[0]}` : '';
+  let note = build(hookLine, intro, sign);
+  if (note.length > NOTE_LIMIT) note = build(hookLine, '', sign);
+  if (note.length > NOTE_LIMIT) {
+    const room = NOTE_LIMIT - build('', '', sign).length - 1;
+    note = build(truncate(hookLine, Math.max(room, 40)), '', sign);
+  }
+  if (note.length > NOTE_LIMIT) note = build(truncate(hookLine, 60), '', '');
+  return truncate(note, NOTE_LIMIT);
 }
 
 // Turns a hook ("Recent post: …", "Studied at …") into an opening sentence.
@@ -343,8 +369,12 @@ function hookToSentence(h) {
 
 // ─── AI message writer (uses the user's OWN key) ──────────────────────────────
 async function aiMessage(apiKey, p, hooks, messageType, tone, settings = {}) {
+  const isNote = settings.format === 'note';
+  const shape  = isNote
+    ? `a LinkedIn connection request note. HARD LIMIT: ${NOTE_LIMIT - 20} characters including spaces — LinkedIn cuts off anything longer. One short paragraph, greeting with first name, sign off with only the sender's first name.`
+    : 'a LinkedIn direct message (under 600 characters), short paragraphs.';
   const prompt =
-`Write a short LinkedIn outreach message (under 600 characters).
+`Write ${shape}
 Purpose: ${messageType}. Tone: ${tone}.
 Recipient profile: ${JSON.stringify({
     name: p.name, headline: p.headline, title: p.currentTitle, company: p.currentCompany,
@@ -355,7 +385,15 @@ Sender name: ${settings.userName || '(not given)'}. Sender bio: ${settings.userB
 ${settings.resumeProfile ? `Sender background from their résumé: ${JSON.stringify(settings.resumeProfile)}
 If a hook starts with "You both", mention that shared background naturally in the first line — it is the strongest reason to reply.` : ''}
 Return only the message text, nothing else.`;
-  return (await callClaude(apiKey, prompt, 400)).trim();
+  let text = (await callClaude(apiKey, prompt, 400)).trim();
+
+  // Models miscount characters — if a note is still too long, ask once to shorten it
+  if (isNote && text.length > NOTE_LIMIT) {
+    text = (await callClaude(apiKey,
+      `Shorten this LinkedIn connection note to under ${NOTE_LIMIT - 30} characters. Keep the opening hook and the ask. Return only the note.\n\n${text}`,
+      200)).trim();
+  }
+  return text;
 }
 
 // `prompt` is a string, or an array of content blocks (e.g. a PDF document + text)

@@ -12,6 +12,7 @@ let isEnriching        = false;
 document.addEventListener('DOMContentLoaded', async () => {
   initTabs();
   initModeToggle();
+  initFormatToggle();
   wireSettingsEvents();
   wireCurrentEvents();
   wireRecentEvents();
@@ -162,7 +163,7 @@ async function callQuickGenerate(profile) {
   const settings    = { userName, userBio };
   const messageType = document.getElementById('message-type').value;
   const tone        = document.getElementById('tone').value;
-  return sendToBackground({ action: 'generateMessage', data: { profileData: profile, settings, messageType, tone } });
+  return sendToBackground({ action: 'generateMessage', data: { profileData: profile, settings, messageType, tone, format: currentFormat } });
 }
 
 async function handleRegenerate() {
@@ -266,7 +267,7 @@ async function handleDeepGenerate() {
   const selectedHooks = [...document.querySelectorAll('#hooks-list .hook-item.selected')].map(el => el.dataset.hook);
 
   chrome.runtime.sendMessage(
-    { type: 'RUN_GENERATE', payload: { profileJSON: deepProfileJSON, enrichmentJSON: deepEnrichmentJSON, selectedHooks, messageType, tone } },
+    { type: 'RUN_GENERATE', payload: { profileJSON: deepProfileJSON, enrichmentJSON: deepEnrichmentJSON, selectedHooks, messageType, tone, format: currentFormat } },
     async (response) => {
       isGenerating = false;
       setButtonLoading('deep-generate-btn', 'deep-gen-label', 'deep-gen-spinner', false, 'Write message');
@@ -459,8 +460,46 @@ function renderMessage(text) {
 }
 
 function hideMessage() { document.getElementById('message-section').classList.add('hidden'); }
+// LinkedIn cuts connection notes off at 300 characters, so the counter shows
+// the limit and turns amber / red as you approach and pass it.
+const NOTE_LIMIT = 300;
+
 function updateCharCount() {
-  document.getElementById('char-count').textContent = `${document.getElementById('generated-message').value.length} chars`;
+  const len     = document.getElementById('generated-message').value.length;
+  const el      = document.getElementById('char-count');
+  const warning = document.getElementById('length-warning');
+  if (currentFormat === 'note') {
+    el.textContent = `${len} / ${NOTE_LIMIT}`;
+    el.classList.toggle('near', len > NOTE_LIMIT * 0.9 && len <= NOTE_LIMIT);
+    el.classList.toggle('over', len > NOTE_LIMIT);
+    warning.classList.toggle('hidden', len <= NOTE_LIMIT);
+  } else {
+    el.textContent = `${len} chars`;
+    el.classList.remove('near', 'over');
+    warning.classList.add('hidden');
+  }
+}
+
+// ─── Format: connection note (≤300) vs message ────────────────────────────────
+let currentFormat = 'note';
+
+function initFormatToggle() {
+  document.querySelectorAll('.format-btn').forEach(btn => {
+    btn.addEventListener('click', () => {
+      currentFormat = btn.dataset.format;
+      document.querySelectorAll('.format-btn').forEach(b => {
+        const on = b === btn;
+        b.classList.toggle('active', on);
+        b.setAttribute('aria-checked', String(on));
+      });
+      chrome.storage.local.set({ messageFormat: currentFormat });
+      updateCharCount();
+    });
+  });
+  chrome.storage.local.get(['messageFormat'], ({ messageFormat }) => {
+    const btn = document.querySelector(`.format-btn[data-format="${messageFormat}"]`);
+    if (btn) btn.click();
+  });
 }
 
 async function handleCopy() {

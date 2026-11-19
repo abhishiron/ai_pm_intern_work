@@ -497,6 +497,36 @@ body {
 
 .message-area-label { font-size: 11px; font-weight: 600; color: var(--text-2); text-transform: uppercase; letter-spacing: 0.04em; }
 .char-count         { font-size: 11px; color: var(--text-2); font-variant-numeric: tabular-nums; }
+.char-count.near    { color: var(--warning); font-weight: 600; }
+.char-count.over    { color: var(--error);   font-weight: 600; }
+
+/* ── Format toggle: connection note vs message ─────────────────────────────── */
+.format-toggle {
+  display: flex;
+  gap: 6px;
+  margin-bottom: 10px;
+}
+.format-btn {
+  flex: 1;
+  padding: 6px 8px;
+  font: inherit;
+  font-size: 11.5px;
+  font-weight: 500;
+  color: var(--text-2);
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  cursor: pointer;
+}
+.format-btn:hover  { border-color: var(--accent); color: var(--accent); }
+.format-btn.active { border-color: var(--accent); background: var(--accent-light); color: var(--accent); font-weight: 600; }
+.format-limit      { font-size: 10px; opacity: 0.75; margin-left: 2px; }
+
+.length-warning {
+  margin: 0 12px 8px;
+  font-size: 11px;
+  color: var(--error);
+}
 
 .message-textarea {
   width: 100%;
