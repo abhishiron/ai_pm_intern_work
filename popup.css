@@ -355,6 +355,23 @@ body {
 
 .hook-item.selected::before { content: '☑'; }
 
+/* Shared background with the sender — the strongest hook, so it stands out */
+.hook-item.common { font-weight: 600; }
+.hook-item.common::after {
+  content: 'common ground';
+  display: inline-block;
+  white-space: nowrap;
+  margin-left: 6px;
+  padding: 1px 6px;
+  border-radius: 8px;
+  font-size: 9.5px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  color: var(--success);
+  background: var(--success-bg);
+}
+
 .hook-item:hover { background: rgba(14, 116, 144, 0.05); }
 .hook-item:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
 

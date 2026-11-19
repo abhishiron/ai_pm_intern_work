@@ -157,7 +157,9 @@ async function handleScrapeAndGenerate() {
 }
 
 async function callQuickGenerate(profile) {
-  const settings    = await loadStoredSettings();
+  // Only what the writer needs — no API key or résumé PDF passed around
+  const { userName, userBio } = await loadStoredSettings();
+  const settings    = { userName, userBio };
   const messageType = document.getElementById('message-type').value;
   const tone        = document.getElementById('tone').value;
   return sendToBackground({ action: 'generateMessage', data: { profileData: profile, settings, messageType, tone } });
@@ -307,10 +309,9 @@ async function loadSettings() {
   if (s.resumeFileName) {
     document.getElementById('file-label').textContent = s.resumeFileName;
     document.getElementById('file-upload-area').classList.add('has-file');
-    const statusEl = document.getElementById('resume-status');
-    statusEl.textContent = `${s.resumeFileName} saved ✓`;
-    statusEl.className   = 'resume-status success';
-    statusEl.classList.remove('hidden');
+    const { resumeProfile } = await new Promise(r => chrome.storage.local.get(['resumeProfile'], r));
+    if (resumeProfile) showResumeSummary(resumeProfile);
+    else setResumeStatus(`${s.resumeFileName} saved — add an API key so Claude can read it.`, 'pending');
   }
 }
 
@@ -319,18 +320,48 @@ async function handleSaveSettings() {
   const userName   = document.getElementById('user-name').value.trim();
   const userBio    = document.getElementById('user-bio').value.trim();
 
+  const before      = await loadStoredSettings();
   const savePayload = { userApiKey, userName, userBio };
+  let resumeChanged = false;
   if (pendingResume) {
     savePayload.resumeBase64   = pendingResume.base64;
     savePayload.resumeFileName = pendingResume.fileName;
     pendingResume = null;
-    const statusEl = document.getElementById('resume-status');
-    statusEl.textContent = 'Resume saved ✓';
-    statusEl.className   = 'resume-status success';
+    resumeChanged = true;
   }
+  if (resumeChanged) await new Promise(r => chrome.storage.local.remove(['resumeProfile'], r));
   await new Promise(resolve => chrome.storage.local.set(savePayload, resolve));
   showSettingsStatus('Settings saved!', 'success');
   await checkLicenseStatus();
+
+  // Read the résumé when it's new, or when a key was just added for an unread one
+  const { resumeProfile } = await new Promise(r => chrome.storage.local.get(['resumeProfile'], r));
+  const hasResume = resumeChanged || !!before.resumeBase64;
+  if (hasResume && userApiKey && !resumeProfile) await readResume();
+  else if (hasResume && !userApiKey) setResumeStatus('Résumé saved — add an API key so Claude can read it and find common ground.', 'pending');
+}
+
+async function readResume() {
+  setResumeStatus('Claude is reading your résumé…', 'pending');
+  const res = await new Promise(r => chrome.runtime.sendMessage({ type: 'PARSE_RESUME' }, r));
+  if (res && res.success) showResumeSummary(res.data);
+  else setResumeStatus(`Couldn't read résumé: ${res?.error || 'unknown error'}`, 'error');
+}
+
+function showResumeSummary(rp) {
+  const bits = [
+    rp.schools.length   ? rp.schools.slice(0, 2).join(', ')   : null,
+    rp.companies.length ? rp.companies.slice(0, 2).join(', ') : null,
+    rp.skills.length    ? `${rp.skills.length} skills`        : null
+  ].filter(Boolean).join(' · ');
+  setResumeStatus(`✓ Résumé read — ${bits || 'saved'}. Shared schools, companies and skills will be used as hooks.`, 'success');
+}
+
+function setResumeStatus(text, type) {
+  const el = document.getElementById('resume-status');
+  el.textContent = text;
+  el.className   = `resume-status ${type}`;
+  el.classList.remove('hidden');
 }
 
 async function handleValidateKey() {
@@ -385,7 +416,7 @@ function renderHooks(enrichmentJSON) {
   hooks.slice(0, 3).forEach(hook => {
     const d = document.createElement('button');
     d.type         = 'button';
-    d.className    = 'hook-item selected';
+    d.className    = 'hook-item selected' + (/^You(?:'re)? both /.test(hook) ? ' common' : '');
     d.dataset.hook = hook;
     d.textContent  = hook;
     d.setAttribute('aria-pressed', 'true');

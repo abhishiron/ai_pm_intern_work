@@ -35,6 +35,11 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
     return true;
   }
 
+  if (message.type === 'PARSE_RESUME') {
+    handleParseResume(sendResponse);
+    return true;
+  }
+
   if (message.type === 'SAVE_RECENT') {
     chrome.storage.local.get(['recentContacts'], (result) => {
       const recent  = result.recentContacts || [];
@@ -89,12 +94,98 @@ async function handleTestKey({ apiKey }, sendResponse) {
   }
 }
 
+// ─── Résumé: read it once with Claude, keep only a small structured summary ───
+// The uploaded PDF used to be stored and never read. Now Claude extracts the
+// facts that matter for outreach, and those are matched against each profile.
+async function handleParseResume(sendResponse) {
+  try {
+    const apiKey = await getApiKey();
+    const { resumeBase64 } = await storageGet(['resumeBase64']);
+    if (!resumeBase64) throw new Error('No résumé saved yet.');
+    if (!apiKey) throw new Error('Add your Anthropic API key so Claude can read your résumé.');
+
+    const raw = await callClaude(apiKey, [
+      { type: 'document', source: { type: 'base64', media_type: 'application/pdf', data: resumeBase64 } },
+      { type: 'text', text:
+`Extract facts from this résumé for personalising LinkedIn outreach.
+Reply with ONLY JSON in this shape, no other text:
+{"name":"","headline":"one line, max 100 chars","schools":[],"companies":[],"skills":[],"locations":[],"summary":"2 sentences in first person, max 300 chars"}
+Use short canonical names (e.g. "IIT Delhi", "Google"). Max 15 skills.` }
+    ], 700);
+
+    const match = raw.match(/\{[\s\S]*\}/);
+    if (!match) throw new Error('Could not read the résumé.');
+    const parsed = JSON.parse(match[0]);
+    const resumeProfile = {
+      name:      String(parsed.name || ''),
+      headline:  String(parsed.headline || ''),
+      schools:   toList(parsed.schools),
+      companies: toList(parsed.companies),
+      skills:    toList(parsed.skills).slice(0, 15),
+      locations: toList(parsed.locations),
+      summary:   String(parsed.summary || '')
+    };
+    await new Promise(r => chrome.storage.local.set({ resumeProfile }, r));
+    sendResponse({ success: true, data: resumeProfile });
+  } catch (err) {
+    sendResponse({ success: false, error: err.message });
+  }
+}
+
+// ─── Common ground between the user (résumé) and the profile ──────────────────
+function findCommonGround(me, p) {
+  if (!me) return [];
+  const out = [];
+
+  const theirSchools = p.educationEntries.map(stringify);
+  const school = me.schools.find(s => theirSchools.some(t => sameOrg(s, t)));
+  if (school) out.push(`You both studied at ${school}`);
+
+  const theirCompanies = [p.currentCompany, ...p.pastCompanies, ...p.experienceEntries.map(e => e.company)].filter(Boolean);
+  const company = me.companies.find(c => theirCompanies.some(t => sameOrg(c, t)));
+  if (company) out.push(`You both worked at ${company}`);
+
+  const theirSkills = p.skills.map(s => s.toLowerCase());
+  const skills = me.skills.filter(s => theirSkills.includes(s.toLowerCase())).slice(0, 2);
+  if (skills.length) out.push(`You both work with ${skills.join(' and ')}`);
+
+  const city = me.locations.find(l => p.location && p.location.toLowerCase().includes(l.split(',')[0].trim().toLowerCase()));
+  if (city && !out.length) out.push(`You're both based in ${city.split(',')[0].trim()}`);
+
+  return out;
+}
+
+// "IIM Bangalore" vs "Indian Institute of Management Bangalore — MBA": match on
+// the full name, or on all significant words of the shorter name.
+function sameOrg(a, b) {
+  const norm = s => String(s || '').toLowerCase().replace(/[^a-z0-9 ]/g, ' ').replace(/\s+/g, ' ').trim();
+  const x = norm(a), y = norm(b);
+  if (!x || !y) return false;
+  if (x === y || y.includes(x) || x.includes(y)) return true;
+  const stop = new Set(['of', 'the', 'and', 'at', 'in', 'for', 'university', 'college', 'institute', 'inc', 'ltd', 'pvt', 'limited', 'technology', 'technologies']);
+  const [short, long] = x.length <= y.length ? [x, y] : [y, x];
+  const longWords = long.split(' ');
+  // Initials of the longer name, e.g. "indian institute of management bangalore" → "iimb"
+  const initials  = longWords.filter(w => !['of', 'the', 'and', 'for'].includes(w)).map(w => w[0]).join('');
+  const words = short.split(' ').filter(w => w.length > 1 && !stop.has(w));
+  return words.length > 0 && words.every(w => longWords.includes(w) || (w.length >= 2 && w.length <= 5 && initials.includes(w)));
+}
+
+async function hooksFor(p) {
+  const { resumeProfile } = await storageGet(['resumeProfile']);
+  const common = findCommonGround(resumeProfile, p);
+  // Common ground first — it's the strongest reason for a stranger to reply —
+  // but capped at 2 so there's always room for something about *them*.
+  return [...common.slice(0, 2), ...buildHooks(p)].slice(0, 4);
+}
+
 // ─── Quick Mode generate ──────────────────────────────────────────────────────
 async function handleQuickGenerate(data, sendResponse) {
   try {
-    const { profileData, settings, messageType, tone } = data;
+    const { profileData, messageType, tone } = data;
+    const settings = { ...(data.settings || {}), ...(await storageGet(['resumeProfile'])) };
     const p     = normalizeProfile(profileData);
-    const hooks = buildHooks(p);
+    const hooks = await hooksFor(p);
     const apiKey = await getApiKey();
 
     const message = apiKey
@@ -114,13 +205,16 @@ async function handleEnrich({ rawProfileData, messageType }, sendResponse) {
   try {
     const profileJSON = normalizeProfile(rawProfileData);
     const apiKey      = await getApiKey();
-    let topHooks      = buildHooks(profileJSON);
+    const { resumeProfile } = await storageGet(['resumeProfile']);
+    const common      = findCommonGround(resumeProfile, profileJSON);
+    let topHooks      = await hooksFor(profileJSON);
     let source        = 'rules';
 
     if (apiKey) {
       try {
-        const aiHooks = await findHooksWithClaude(apiKey, profileJSON, messageType);
-        if (aiHooks.length) { topHooks = aiHooks; source = 'claude'; }
+        const aiHooks = await findHooksWithClaude(apiKey, profileJSON, messageType, resumeProfile);
+        // Rule-matched common ground is exact, so it always stays on top
+        if (aiHooks.length) { topHooks = [...common.slice(0, 2), ...aiHooks.filter(h => !common.includes(h))].slice(0, 4); source = 'claude'; }
       } catch (_) { /* fall back to rule-based hooks */ }
     }
 
@@ -130,11 +224,12 @@ async function handleEnrich({ rawProfileData, messageType }, sendResponse) {
   }
 }
 
-async function findHooksWithClaude(apiKey, p, messageType) {
+async function findHooksWithClaude(apiKey, p, messageType, me) {
   const prompt =
 `You help someone write a LinkedIn outreach message (purpose: ${messageType || 'Networking'}).
 From this profile, pick the 3 most specific, personal talking points they could open with.
 Prefer concrete things (a recent post, a project, a career move) over generic ones (job title, "skilled in X").
+${me ? `The sender's background (prefer hooks that connect to it): ${JSON.stringify(me)}` : ''}
 Profile: ${JSON.stringify({
     name: p.name, headline: p.headline, title: p.currentTitle, company: p.currentCompany, location: p.location,
     about: truncate(p.about, 600), recentPosts: p.recentPosts, experience: p.experienceEntries,
@@ -150,7 +245,7 @@ Reply with ONLY a JSON array of 3 short strings (max 90 characters each), no oth
 // ─── Deep Mode step 3: write message from the hooks the user kept ─────────────
 async function handleDeepGenerate({ profileJSON, enrichmentJSON, selectedHooks, messageType, tone }, sendResponse) {
   try {
-    const settings = await new Promise(resolve => chrome.storage.local.get(['userName', 'userBio'], resolve));
+    const settings = await storageGet(['userName', 'userBio', 'resumeProfile']);
     const hooks    = Array.isArray(selectedHooks) ? selectedHooks : (enrichmentJSON?.topHooks || []);
     const apiKey   = await getApiKey();
 
@@ -206,11 +301,18 @@ function localMessage(p, hooks, messageType, tone, settings = {}) {
   const close = { Formal: 'Kind regards,', Neutral: 'Best,', Casual: 'Cheers,' }[tone] || 'Best,';
 
   let hookLine = `I came across your profile and was impressed by your work as ${role}${co}.`;
-  if (hooks.length) hookLine = hookToSentence(hooks[0]);
+  if (hooks.length) {
+    hookLine = hookToSentence(hooks[0]);
+    // Shared background is a bridge, not the whole message — follow it with a real hook
+    const isCommon = h => /^You(?:'re)? both /.test(h);
+    const theirs   = hooks.find(h => !isCommon(h));
+    if (isCommon(hooks[0]) && theirs) hookLine += ' ' + hookToSentence(theirs);
+  }
   else if (p.recentPosts.length) hookLine = `I enjoyed your recent post about "${truncate(p.recentPosts[0], 60)}".`;
   else if (p.skills.length) hookLine = `Your experience in ${p.skills.slice(0, 2).join(' and ')}${co} caught my attention.`;
 
-  const intro = bio ? ` A bit about me: ${truncate(bio, 120)}` : '';
+  const aboutMe = bio || settings.resumeProfile?.summary || '';
+  const intro = aboutMe ? ` A bit about me: ${truncate(aboutMe, 120)}` : '';
 
   const ask = {
     Networking:    `I'd love to connect and exchange ideas.`,
@@ -225,6 +327,10 @@ function localMessage(p, hooks, messageType, tone, settings = {}) {
 // Turns a hook ("Recent post: …", "Studied at …") into an opening sentence.
 function hookToSentence(h) {
   let m;
+  if ((m = h.match(/^You both studied at (.+)$/))) return `I noticed we're both from ${m[1]}!`;
+  if ((m = h.match(/^You both worked at (.+)$/)))  return `I noticed we've both spent time at ${m[1]}.`;
+  if ((m = h.match(/^You both work with (.+)$/)))  return `I noticed we both work with ${m[1]}.`;
+  if ((m = h.match(/^You're both based in (.+)$/))) return `I noticed we're both based in ${m[1]}.`;
   if ((m = h.match(/^Recent post: "(.*)"$/)))      return `I enjoyed your recent post — "${truncate(m[1], 70)}".`;
   if ((m = h.match(/^Works as (.+) at (.+)$/)))    return `I came across your work as ${m[1]} at ${m[2]} and was impressed.`;
   if ((m = h.match(/^Currently at (.+)$/)))        return `I noticed you're currently at ${m[1]}.`;
@@ -246,10 +352,13 @@ Recipient profile: ${JSON.stringify({
   })}
 Open with these personalisation hooks (in this order of priority): ${hooks.join(' | ') || '(none — use the most specific detail in the profile)'}
 Sender name: ${settings.userName || '(not given)'}. Sender bio: ${settings.userBio || '(not given)'}.
+${settings.resumeProfile ? `Sender background from their résumé: ${JSON.stringify(settings.resumeProfile)}
+If a hook starts with "You both", mention that shared background naturally in the first line — it is the strongest reason to reply.` : ''}
 Return only the message text, nothing else.`;
   return (await callClaude(apiKey, prompt, 400)).trim();
 }
 
+// `prompt` is a string, or an array of content blocks (e.g. a PDF document + text)
 async function callClaude(apiKey, prompt, maxTokens) {
   const res = await fetch(ANTHROPIC_URL, {
     method: 'POST',
@@ -275,3 +384,5 @@ function getApiKey() {
 function truncate(s, n) { s = String(s || '').replace(/\s+/g, ' ').trim(); return s.length > n ? s.slice(0, n - 1) + '…' : s; }
 function stringify(x) { return typeof x === 'string' ? x : (x?.school || x?.name || x?.title || Object.values(x || {}).join(', ')); }
 function delay(ms) { return new Promise(r => setTimeout(r, ms)); }
+function storageGet(keys) { return new Promise(r => chrome.storage.local.get(keys, r)); }
+function toList(x) { return Array.isArray(x) ? x.map(String).map(s => s.trim()).filter(Boolean) : []; }
