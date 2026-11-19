@@ -74,7 +74,7 @@ function scrapeProfile() {
         .filter(t => t.length > 3);
       // Location is usually the 2nd or 3rd p tag — looks like "City, Country"
       const locEl = pTags.find(t =>
-        t.includes(',') && t.length < 60 && !t.includes('|') && !t.includes('@')
+        t !== headline && t.includes(',') && t.length < 60 && !t.includes('|') && !t.includes('@')
       );
       if (locEl) { location = locEl; break; }
     }
@@ -90,6 +90,8 @@ function scrapeProfile() {
   }
 
   // ── EXPERIENCE ────────────────────────────────────────────────────────────
+  // Each entry is: title, company, then any number of date / location lines.
+  // We walk line by line instead of assuming a fixed 3-or-4 line stride.
   const experienceEntries = [];
   const expSection = getSection('Experience');
   if (expSection) {
@@ -98,29 +100,38 @@ function scrapeProfile() {
       .map(p => clean(p.innerText))
       .filter(t => t.length > 2 && t !== 'Experience');
 
-    // Group into entries of 3-4 lines each
-    // Pattern: title, company·type, date, location(optional)
     let i = 0;
     while (i < pTags.length) {
-      const title   = pTags[i];
-      const company = pTags[i+1] || null;
-      const dur     = pTags[i+2] || null;
+      const title = pTags[i];
 
-      // Skip if looks like a date/location (not a title)
-      if (/^\d{4}|present|jan|feb|mar|apr|may|jun|jul|aug|sep|oct|nov|dec/i.test(title)) {
-        i++; continue;
+      // Skip stray date / work-mode lines and long description paragraphs
+      if (isDateLine(title) || isWorkModeLine(title) || title.length > 100) { i++; continue; }
+
+      const company = pTags[i + 1] || null;
+      let j = i + 2;
+      let duration = null;
+      // Dates come first, then an optional location line. A comma line is only
+      // treated as a location if it is NOT the start of the next entry
+      // (title, company, date) — so "Founder, CEO" stays a job title.
+      while (j < pTags.length) {
+        const line = pTags[j];
+        if (isDateLine(line)) { if (!duration) duration = line; j++; continue; }
+        if (duration && isDateLine(pTags[j - 1] || '')) {
+          if (isWorkModeLine(line)) { j++; continue; }
+          const startsNextEntry = isDateLine(pTags[j + 2] || '');
+          if (isLocationLine(line) && !startsNextEntry) { j++; continue; }
+        }
+        break;
       }
 
       experienceEntries.push({
         title,
         company:   company ? company.split('·')[0].trim() : null,
-        duration:  dur && /\d{4}|present|yr|mos|mo\b/i.test(dur) ? dur : null,
-        isCurrent: experienceEntries.length === 0
+        duration,
+        isCurrent: duration ? /present/i.test(duration) : experienceEntries.length === 0
       });
 
-      // Advance past this entry (title + company + date + optional location = 3-4 lines)
-      i += /remote|onsite|on-site|hybrid|india|bengaluru|mumbai|delhi/i.test(pTags[i+3] || '')
-        ? 4 : 3;
+      i = Math.max(j, i + 2);
     }
   }
 
@@ -188,6 +199,28 @@ function scrapeProfile() {
     profileUrl:        window.location.href.split('?')[0],
     rawTitle:          document.title
   };
+}
+
+// A date line starts with a year, or a month followed by a year,
+// e.g. "2021 - Present", "Jan 2022 - Mar 2024 · 2 yrs 3 mos".
+// Anchored at the start so job titles like "Marketing Manager" or
+// "Sales Representative" are no longer mistaken for dates.
+function isDateLine(t) {
+  return /^(?:(?:jan|feb|mar|apr|may|jun|jul|aug|sep|sept|oct|nov|dec)[a-z]*\.?\s+)?\d{4}\b/i.test(t) ||
+         /^present\b/i.test(t) ||
+         /^\d+\s*(?:yrs?|mos?)\b/i.test(t);
+}
+
+// "Remote", "Hybrid", "On-site", or "Pune, India · Hybrid"
+function isWorkModeLine(t) {
+  return /^(?:remote|on-?site|hybrid)$/i.test(t) || /·\s*(?:remote|on-?site|hybrid)$/i.test(t);
+}
+
+// A short "City, Country" / "City Area" style line with no digits.
+// Replaces the old hard-coded list of Indian cities.
+function isLocationLine(t) {
+  if (/\b(?:area|metropolitan)\b/i.test(t) && !/\d/.test(t) && t.length < 60) return true;
+  return t.includes(',') && t.length < 60 && !/\d/.test(t) && t.split(' ').length <= 6;
 }
 
 function extractFromHeadline(headline, field) {
